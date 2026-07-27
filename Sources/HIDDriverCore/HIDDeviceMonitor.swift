@@ -151,6 +151,55 @@ public class HIDDeviceMonitor {
     /// from each can be logged exactly once.
     private var reportedDevices: Set<UInt> = []
 
+    /// Digitizer interfaces that have delivered at least one input report.
+    ///
+    /// This is the only trustworthy evidence that a panel is really in
+    /// multi-touch mode. Its configuration register is not: it reads back 0x02
+    /// on a panel that is still emitting single-contact mouse-emulation
+    /// reports.
+    private var digitizersThatReported: Set<UInt> = []
+
+    /// Why an arming attempt is being made. The two kinds get separate budgets:
+    /// a run of blind timer attempts must not use up the ones made in response
+    /// to hard evidence that the panel reverted, because those are the attempts
+    /// that are actually known to be needed.
+    private enum ArmReason: String {
+        /// Fired on a timer while the digitizer has said nothing at all — which
+        /// is also what an untouched panel looks like, so this is speculative.
+        case settle
+        /// A touch arrived on the panel's mouse collection while its digitizer
+        /// stayed silent: proof the panel is in mouse-emulation mode.
+        case evidence
+    }
+
+    /// Arming attempts per panel ("vid:pid") and reason, so a panel that cannot
+    /// be armed does not take a feature-report write forever.
+    private var armAttempts: [ArmReason: [String: Int]] = [:]
+    private var lastArmAttempt: [String: Date] = [:]
+
+    /// Shortest gap between two arming attempts on the same panel.
+    ///
+    /// Low enough that a touch which exposes a reverted panel is followed by a
+    /// re-arm almost immediately: at 100 Hz a longer window means the recovery
+    /// is rate-limited away and multi-touch stays broken until the *next* touch.
+    public var rearmInterval: TimeInterval = 1.0
+
+    /// Give up arming a panel after this many tries.
+    public var maxArmAttempts: Int = 5
+
+    /// Re-arm the panel on this cadence until its digitizer actually reports.
+    ///
+    /// Arming at enumeration is too early to stick. The panel this was developed
+    /// against accepts the write, reads Device Mode back as 0x02, and then
+    /// reverts to 0x00 a second or two later as it finishes its own
+    /// initialisation — so the register says multi-touch while the hardware
+    /// keeps emitting mouse-emulation packets. Retrying on a timer closes that
+    /// window without having to guess the one correct delay.
+    public var settleRearmInterval: TimeInterval = 2.5
+
+    /// Re-arm timers, keyed by digitizer interface.
+    private var settleTimers: [UInt: Timer] = [:]
+
     private static let reportBufferSize = 256
 
     /// True when at least one touch device is exclusively owned, i.e. macOS is
@@ -226,6 +275,11 @@ public class HIDDeviceMonitor {
         open.removeAll()
         infoCache.removeAll()
         reportedDevices.removeAll()
+        digitizersThatReported.removeAll()
+        settleTimers.values.forEach { $0.invalidate() }
+        settleTimers.removeAll()
+        armAttempts.removeAll()
+        lastArmAttempt.removeAll()
         connectedDevices.removeAll()
 
         IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetCurrent(), CFRunLoopMode.commonModes.rawValue)
@@ -296,7 +350,8 @@ public class HIDDeviceMonitor {
 
         if info.isDigitizer {
             if enableMultiTouch {
-                enableMultiTouchMode(device, info: info)
+                armMultiTouch(device, info: info, reason: .settle)
+                scheduleSettleRearm(device, info: info, key: key)
             }
             if let descriptor = IOHIDDeviceGetProperty(device, kIOHIDReportDescriptorKey as CFString) as? Data,
                let layout = MultiTouchLayout.from(descriptor: [UInt8](descriptor)) {
@@ -325,7 +380,19 @@ public class HIDDeviceMonitor {
     /// host writes the Device Configuration feature report (Digitizer usage
     /// 0x0E, containing Device Mode 0x52). Windows does this at enumeration;
     /// macOS does not, which is why the digitizer collection is silent.
-    private func enableMultiTouchMode(_ device: IOHIDDevice, info: HIDDeviceInfo) {
+    ///
+    /// Arming is **not idempotent, and the readback does not prove anything**.
+    /// A panel will report Device Mode 0x02 while still emitting nothing but
+    /// mouse-emulation packets, and writing the value the register already
+    /// holds changes nothing inside the firmware — so a driver that reads 0x02,
+    /// writes 0x02 and declares success leaves multi-touch dead with no
+    /// indication that anything went wrong. Two things follow, and both matter:
+    ///
+    /// - the target mode is always approached through an explicit 0x00, making
+    ///   the write a real transition rather than a no-op;
+    /// - success is judged by `digitizersThatReported`, i.e. by whether the
+    ///   digitizer actually starts speaking, never by the register.
+    private func armMultiTouch(_ device: IOHIDDevice, info: HIDDeviceInfo, reason: ArmReason) {
         guard let descriptor = IOHIDDeviceGetProperty(device, kIOHIDReportDescriptorKey as CFString) as? Data,
               let reportID = Self.deviceConfigurationReportID(in: [UInt8](descriptor)) else {
             Log.hidInfo("[HID] \(info.product): no Device Configuration report, leaving input mode alone.")
@@ -336,38 +403,116 @@ public class HIDDeviceMonitor {
             Log.hidError("[HID] \(info.product): device config report 0x\(String(format: "%02X", reportID)) is not readable; cannot enable multi-touch.")
             return
         }
-        Log.hidInfo("[HID] \(info.product): device config 0x\(String(format: "%02X", reportID)) currently \(Self.hex(current)).")
+
+        let panel = Self.panelKey(for: info)
+        let attempt = (armAttempts[reason]?[panel] ?? 0) + 1
+        armAttempts[reason, default: [:]][panel] = attempt
+        lastArmAttempt[panel] = Date()
+
+        Log.hidInfo("[HID] \(info.product): device config 0x\(String(format: "%02X", reportID)) reads \(Self.hex(current)); arming (\(reason.rawValue) \(attempt)/\(maxArmAttempts)).")
 
         // Whether the buffer carries the report ID as byte 0 varies by device;
         // infer it from what the read returned, but try both anyway.
         let echoesReportID = current.first == reportID
         let deviceIdentifier = Self.deviceIdentifier(from: current, reportID: reportID)
 
-        // A SetReport returning success only means the request was delivered —
-        // this panel accepts and silently ignores the wrong buffer layout — so
-        // every attempt is confirmed by reading the value back.
         for mode in Self.candidateDeviceModes {
             for prefixed in [echoesReportID, !echoesReportID] {
-                let payload: [UInt8] = prefixed
-                    ? [reportID, mode, deviceIdentifier]
-                    : [mode, deviceIdentifier]
+                func payload(_ value: UInt8) -> [UInt8] {
+                    prefixed ? [reportID, value, deviceIdentifier] : [value, deviceIdentifier]
+                }
 
-                let result = IOHIDDeviceSetReport(device, kIOHIDReportTypeFeature, CFIndex(reportID), payload, payload.count)
+                // Force a transition: drop to mouse emulation, then climb out.
+                let reset = payload(Self.mouseEmulationMode)
+                _ = IOHIDDeviceSetReport(device, kIOHIDReportTypeFeature, CFIndex(reportID), reset, reset.count)
+
+                let target = payload(mode)
+                let result = IOHIDDeviceSetReport(device, kIOHIDReportTypeFeature, CFIndex(reportID), target, target.count)
                 guard result == kIOReturnSuccess else {
-                    Log.hidInfo("[HID] \(info.product): write \(Self.hex(payload)) rejected outright (\(Log.kr(result))).")
+                    Log.hidInfo("[HID] \(info.product): write \(Self.hex(target)) rejected outright (\(Log.kr(result))).")
                     continue
                 }
 
                 guard let readback = readFeature(device, reportID: reportID) else { continue }
                 if Self.deviceMode(from: readback, reportID: reportID) == mode {
-                    Log.hidInfo("[HID] \(info.product): multi-touch ENABLED — wrote \(Self.hex(payload)), reads back \(Self.hex(readback)).")
+                    Log.hidInfo("[HID] \(info.product): wrote \(Self.hex(reset)) then \(Self.hex(target)), reads back \(Self.hex(readback)). Multi-touch is only confirmed once the digitizer reports.")
                     return
                 }
-                Log.hidInfo("[HID] \(info.product): write \(Self.hex(payload)) ignored (still \(Self.hex(readback))).")
+                Log.hidInfo("[HID] \(info.product): write \(Self.hex(target)) ignored (still \(Self.hex(readback))).")
             }
         }
 
         Log.hidError("[HID] \(info.product): the panel would not leave mouse-emulation mode. Multi-touch is unavailable; single-contact input still works.")
+    }
+
+    /// A touch arriving through the panel's mouse collection while its digitizer
+    /// has never said a word is direct evidence that the panel is still in
+    /// mouse-emulation mode — the one thing the configuration register cannot
+    /// tell us. Arm it again, mid-touch.
+    ///
+    /// This is also what restores multi-touch after a sleep/wake or a USB
+    /// re-enumeration power-cycles the panel behind our back: the recovery is
+    /// driven by what the hardware is actually doing, so it needs no power
+    /// notifications and no guesses about which events reset a panel. The cost
+    /// is that the touch which triggers the recovery is itself handled as a
+    /// single contact.
+    private func rearmIfDigitizerIsSilent(for info: HIDDeviceInfo) {
+        guard let match = open.first(where: {
+            $0.value.info.isDigitizer
+                && $0.value.info.vendorID == info.vendorID
+                && $0.value.info.productID == info.productID
+        }) else { return }
+
+        guard !digitizersThatReported.contains(match.key) else { return }
+
+        let panel = Self.panelKey(for: info)
+        guard (armAttempts[.evidence]?[panel] ?? 0) < maxArmAttempts else { return }
+        if let last = lastArmAttempt[panel], Date().timeIntervalSince(last) < rearmInterval { return }
+
+        Log.hidInfo("[HID] \(info.product): touch arrived on the mouse collection while the digitizer is silent — the panel is still in mouse-emulation mode.")
+        armMultiTouch(match.value.device, info: match.value.info, reason: .evidence)
+    }
+
+    /// Keep arming until the digitizer speaks, the attempt budget runs out, or
+    /// the device goes away.
+    ///
+    /// Without this the panel is only repaired by the first touch after it
+    /// reverts, and that touch is spent as a single contact. Scheduled in common
+    /// modes for the same reason as everything else here: it has to keep firing
+    /// while AppKit is tracking a press.
+    private func scheduleSettleRearm(_ device: IOHIDDevice, info: HIDDeviceInfo, key: UInt) {
+        settleTimers[key]?.invalidate()
+
+        let timer = Timer(timeInterval: settleRearmInterval, repeats: true) { [weak self] timer in
+            guard let self = self else { timer.invalidate(); return }
+
+            // Stop for the reasons that mean there is nothing left to do:
+            // the device is gone, it is working, or it will never work.
+            guard self.open[key] != nil else { self.cancelSettleRearm(key: key); return }
+            guard !self.digitizersThatReported.contains(key) else { self.cancelSettleRearm(key: key); return }
+            guard (self.armAttempts[.settle]?[Self.panelKey(for: info)] ?? 0) < self.maxArmAttempts else {
+                // Only the speculative budget is spent. A touch that proves the
+                // panel reverted still gets its own attempts.
+                Log.hidInfo("[HID] \(info.product): stopping speculative re-arms after \(self.maxArmAttempts) tries; a touch will still trigger one.")
+                self.cancelSettleRearm(key: key)
+                return
+            }
+
+            Log.hidInfo("[HID] \(info.product): digitizer still silent — re-arming (panels revert while they initialise).")
+            self.armMultiTouch(device, info: info, reason: .settle)
+        }
+
+        settleTimers[key] = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func cancelSettleRearm(key: UInt) {
+        settleTimers[key]?.invalidate()
+        settleTimers.removeValue(forKey: key)
+    }
+
+    private static func panelKey(for info: HIDDeviceInfo) -> String {
+        "\(info.vendorID):\(info.productID)"
     }
 
     private func readFeature(_ device: IOHIDDevice, reportID: UInt8) -> [UInt8]? {
@@ -382,6 +527,7 @@ public class HIDDeviceMonitor {
     /// emulation, 2 = multiple-input (what Windows and Linux write), 3 = seen
     /// on some panels that ignore 2.
     private static let candidateDeviceModes: [UInt8] = [0x02, 0x03]
+    private static let mouseEmulationMode: UInt8 = 0x00
 
     private static func deviceMode(from report: [UInt8], reportID: UInt8) -> UInt8? {
         guard !report.isEmpty else { return nil }
@@ -436,6 +582,16 @@ public class HIDDeviceMonitor {
         }
         infoCache.removeValue(forKey: key)
         reportedDevices.remove(key)
+        digitizersThatReported.remove(key)
+        cancelSettleRearm(key: key)
+        // A reconnect is a fresh panel as far as arming goes — a re-enumeration
+        // is exactly the event most likely to have reset it, so it must not
+        // inherit an exhausted attempt budget.
+        let panel = Self.panelKey(for: info)
+        for reason in armAttempts.keys {
+            armAttempts[reason]?.removeValue(forKey: panel)
+        }
+        lastArmAttempt.removeValue(forKey: panel)
         connectedDevices.removeAll(where: { $0.id == info.id })
         Log.hidInfo("[HID] Disconnected: \(info.product)")
         delegate?.hidDeviceMonitor(self, didDetectDevices: connectedDevices)
@@ -452,6 +608,15 @@ public class HIDDeviceMonitor {
         if reportedDevices.insert(key).inserted {
             let hex = data.prefix(64).map { String(format: "%02X", $0) }.joined(separator: " ")
             Log.hidInfo("[HID] First report from \(info.product) [\(info.shortLabel)]: ID 0x\(String(format: "%02X", reportID)), \(data.count) bytes: \(hex)")
+        }
+
+        if info.isDigitizer {
+            if digitizersThatReported.insert(key).inserted {
+                Log.hidInfo("[HID] \(info.product): digitizer is reporting — multi-touch confirmed live.")
+                cancelSettleRearm(key: key)
+            }
+        } else if enableMultiTouch, info.isTouchDevice {
+            rearmIfDigitizerIsSilent(for: info)
         }
 
         delegate?.hidDeviceMonitor(self, didReceiveReport: data, reportID: reportID, fromDevice: info)

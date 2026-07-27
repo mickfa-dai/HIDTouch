@@ -210,6 +210,23 @@ rm -f k.key c.p12 c.crt
 > because no trust settings were added. `codesign` uses it regardless, so adding
 > trust (which needs an admin password) is unnecessary.
 
+The **first** build after importing will stop with a keychain dialog —
+*"codesign wants to sign using key "HIDTouch Local Signing" in your keychain"* —
+and hang until it is answered. Click **Always Allow**, not Allow, or every
+subsequent build stops in the same place. `security import -T` populates the
+item's trusted-application list but not its ACL partition list, which is what
+macOS actually consults.
+
+The non-interactive equivalent, if a dialog is not an option (headless, CI):
+
+```bash
+security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+  -l "HIDTouch Local Signing" ~/Library/Keychains/login.keychain-db
+```
+
+It prompts for the keychain password; passing it as `-k <password>` instead
+works but puts the password in your shell history.
+
 To go back to ad-hoc, delete `HIDTouch Local Signing` in Keychain Access or run
 `SIGN_IDENTITY=- ./build_app.sh`.
 
@@ -305,10 +322,33 @@ host writes `0x02` to Device Mode (`0x52`) inside the Device Configuration
 feature report (Digitizer usage `0x0E`). macOS never sends this, which is why
 the digitizer interface appears silent.
 
-HIDTouch writes it on connect and **reads the value back to confirm it was
-actually accepted** — some panels return success and ignore the write. It also
-tries both buffer conventions (`[reportID, mode, id]` and `[mode, id]`), because
-which one a panel expects is not consistent.
+Writing it once at enumeration is not enough, and **the readback cannot be
+trusted**. The panel this was developed against accepts the write, reports
+Device Mode `0x02` when read back, and then reverts to `0x00` a second or two
+later as it finishes its own initialisation — so the register claims multi-touch
+while the hardware keeps emitting mouse-emulation packets. A driver that reads
+`0x02`, writes `0x02` and declares success leaves multi-touch dead with nothing
+in the logs to say so. Writing the value the register already holds may also be
+a no-op inside the firmware, so the target mode is always approached through an
+explicit `0x00`.
+
+The only trustworthy evidence is whether the digitizer actually speaks, so that
+is what HIDTouch keys on:
+
+- it re-arms on a timer until the digitizer produces a report (five tries, 2.5 s
+  apart), which covers the reversion window without having to guess one correct
+  delay;
+- a touch arriving on the panel's **mouse** collection while its digitizer has
+  never reported is proof the panel is in mouse-emulation mode, and triggers an
+  immediate re-arm with its own attempt budget.
+
+That second rule is also what restores multi-touch after sleep/wake or a USB
+re-enumeration power-cycles the panel — the recovery follows what the hardware
+is doing, so it needs no power notifications and no guesses about which events
+reset a panel.
+
+Both buffer conventions (`[reportID, mode, id]` and `[mode, id]`) are tried,
+because which one a panel expects is not consistent.
 
 Contact block layout differs between panels — some carry pressure, width and
 height — so `HIDReportDescriptor` parses the report descriptor to derive contact
