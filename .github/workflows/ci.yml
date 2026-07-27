@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build and self-test
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Build
+        run: swift build -c release
+
+      # 119 checks covering affine calibration, report parsing, config
+      # forward compatibility and device classification. No hardware needed.
+      - name: Self-test
+        run: swift run core-selftest
+
+      # Ad-hoc signing: the runner has no certificate, and the packaging path
+      # is worth exercising regardless of which identity signs the bundle.
+      - name: Package app bundle
+        run: SIGN_IDENTITY=- ./build_app.sh

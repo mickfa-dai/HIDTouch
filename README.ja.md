@@ -1,5 +1,9 @@
 # HIDTouch
 
+[![CI](https://github.com/koshi545/HIDTouch/actions/workflows/ci.yml/badge.svg)](https://github.com/koshi545/HIDTouch/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%2013%2B-lightgrey.svg)](#動作要件)
+
 macOS が標準サポートしない USB HID タッチパネルを動かすための、ユーザー空間ドライバーと
 キャリブレーション GUI。
 

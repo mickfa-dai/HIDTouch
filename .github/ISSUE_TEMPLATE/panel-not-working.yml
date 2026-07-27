@@ -1,0 +1,85 @@
+name: Panel not working
+description: Your touch panel is not detected, or touches do not come through
+labels: ["panel-support"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        HIDTouch has only been verified against one panel, so a new device
+        needing work is expected rather than surprising.
+
+        Almost every case is solvable from the report descriptor and a packet
+        dump alone, so please include them — it saves a round trip.
+
+  - type: input
+    id: vid-pid
+    attributes:
+      label: Panel VID / PID
+      description: Shown in the HID Inspect tab, or in the `--inspect` output.
+      placeholder: "0x27C6 / 0x0529"
+    validations:
+      required: true
+
+  - type: input
+    id: panel-name
+    attributes:
+      label: Panel model
+      description: Manufacturer and model, if you know them.
+      placeholder: "WingCool 13.3\" portable touch monitor"
+    validations:
+      required: false
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "14.5 (Apple Silicon)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: How far does it get?
+      options:
+        - The panel is not listed at all
+        - It is listed, but no packets arrive when I touch it
+        - Packets arrive, but I cannot work out the report format
+        - The raw point tracks my finger, but calibration is wrong
+        - Calibration is fine, but the cursor does not move
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: inspect
+    attributes:
+      label: Output of `swift run hidtouch-daemon --inspect`
+      description: |
+        Run it, touch the panel a few times, then paste the output. Include the
+        device list at the top — the interfaces it enumerates matter as much as
+        the packets.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: descriptor
+    attributes:
+      label: Report descriptor
+      description: |
+        Optional but the single most useful thing you can attach. The Dashboard's
+        Multi-Touch section shows what was derived from it.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: |
+        Does the panel work on Windows? Is another HID tool (Karabiner-Elements,
+        BetterTouchTool, a vendor driver) running at the same time?
+    validations:
+      required: false

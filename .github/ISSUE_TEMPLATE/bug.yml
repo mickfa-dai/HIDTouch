@@ -1,0 +1,61 @@
+name: Bug report
+description: Something is broken that is not about panel compatibility
+labels: ["bug"]
+body:
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "14.5 (Apple Silicon)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        ```
+        /usr/bin/log show --last 5m --info \
+          --predicate 'subsystem == "com.reo.hidtouch"' --style compact
+        ```
+        If it involves clicks or gestures not registering, run the app with
+        `HIDTOUCH_EVENT_TRACE=1` first — the trace shows what was posted and
+        what came back.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: signature
+    attributes:
+      label: Designated requirement
+      description: Output of `codesign -d -r- "dist/HIDTouch Studio.app"`
+      placeholder: 'designated => identifier "..." and certificate root = H"..."'
+    validations:
+      required: false

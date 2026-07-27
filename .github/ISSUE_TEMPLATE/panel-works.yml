@@ -1,0 +1,72 @@
+name: Report a working panel
+description: HIDTouch works with your panel — help build the compatibility list
+labels: ["panel-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Only one panel has been verified so far. Knowing which others work is
+        genuinely useful to the next person deciding whether this is worth
+        trying.
+
+  - type: input
+    id: vid-pid
+    attributes:
+      label: Panel VID / PID
+      placeholder: "0x27C6 / 0x0529"
+    validations:
+      required: true
+
+  - type: input
+    id: panel-name
+    attributes:
+      label: Panel model
+      placeholder: "WingCool 13.3\" portable touch monitor"
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "14.5 (Apple Silicon)"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: works
+    attributes:
+      label: What works
+      options:
+        - label: Single touch — cursor movement and clicks
+        - label: Dragging
+        - label: Two-finger scrolling
+        - label: Multi-touch contacts show up in the test canvas
+
+  - type: input
+    id: contacts
+    attributes:
+      label: Contact count reported
+      description: Shown in the Dashboard's Multi-Touch section.
+      placeholder: "10"
+    validations:
+      required: false
+
+  - type: textarea
+    id: settings
+    attributes:
+      label: Report format settings you ended up with
+      description: |
+        Paste `~/Library/Application Support/HIDTouch/config.json`, or just
+        describe the offsets. This lets others with the same panel skip the
+        whole setup.
+      render: json
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything that needed working around
+    validations:
+      required: false
