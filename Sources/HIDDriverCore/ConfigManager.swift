@@ -22,6 +22,17 @@ public struct DriverConfig: Codable, Equatable {
     public var scrollActivationPixels: Double
     /// Content follows the fingers, as macOS does by default.
     public var naturalScrolling: Bool
+    /// Map a change in two-finger separation to a pinch.
+    ///
+    /// Off by default: pinch is delivered through undocumented `CGEvent` fields
+    /// that Apple can change in any macOS release, so it is opt-in rather than
+    /// something a first run turns on silently.
+    public var pinchEnabled: Bool
+    /// Multiplies the fractional scale change handed to the application.
+    public var pinchSensitivity: Double
+    /// How far the gap between the fingers must change before the gesture is
+    /// read as a pinch rather than a pan.
+    public var pinchActivationPixels: Double
 
     public static let defaultConfig = DriverConfig(
         selectedVendorID: 0,
@@ -40,10 +51,13 @@ public struct DriverConfig: Codable, Equatable {
         multiTouchEnabled: true,
         scrollSensitivity: 1.0,
         scrollActivationPixels: 6.0,
-        naturalScrolling: true
+        naturalScrolling: true,
+        pinchEnabled: false,
+        pinchSensitivity: 1.0,
+        pinchActivationPixels: 12.0
     )
 
-    public init(selectedVendorID: Int, selectedProductID: Int, reportFormat: HIDReportFormat, calibrationPoints: [CalibrationPoint], affineMatrix: AffineMatrix, smoothingFactor: Double, deadbandPixels: Double, outputMode: TouchOutputMode, targetDisplayID: UInt32? = nil, seizeTouchDevices: Bool = true, multiTouchEnabled: Bool = true, scrollSensitivity: Double = 1.0, scrollActivationPixels: Double = 6.0, naturalScrolling: Bool = true) {
+    public init(selectedVendorID: Int, selectedProductID: Int, reportFormat: HIDReportFormat, calibrationPoints: [CalibrationPoint], affineMatrix: AffineMatrix, smoothingFactor: Double, deadbandPixels: Double, outputMode: TouchOutputMode, targetDisplayID: UInt32? = nil, seizeTouchDevices: Bool = true, multiTouchEnabled: Bool = true, scrollSensitivity: Double = 1.0, scrollActivationPixels: Double = 6.0, naturalScrolling: Bool = true, pinchEnabled: Bool = false, pinchSensitivity: Double = 1.0, pinchActivationPixels: Double = 12.0) {
         self.selectedVendorID = selectedVendorID
         self.selectedProductID = selectedProductID
         self.reportFormat = reportFormat
@@ -58,6 +72,9 @@ public struct DriverConfig: Codable, Equatable {
         self.scrollSensitivity = scrollSensitivity
         self.scrollActivationPixels = scrollActivationPixels
         self.naturalScrolling = naturalScrolling
+        self.pinchEnabled = pinchEnabled
+        self.pinchSensitivity = pinchSensitivity
+        self.pinchActivationPixels = pinchActivationPixels
     }
 
     /// Decode field by field so that adding a setting in a later version does
@@ -79,6 +96,9 @@ public struct DriverConfig: Codable, Equatable {
         scrollSensitivity = (try? c.decode(Double.self, forKey: .scrollSensitivity)) ?? d.scrollSensitivity
         scrollActivationPixels = (try? c.decode(Double.self, forKey: .scrollActivationPixels)) ?? d.scrollActivationPixels
         naturalScrolling = (try? c.decode(Bool.self, forKey: .naturalScrolling)) ?? d.naturalScrolling
+        pinchEnabled = (try? c.decode(Bool.self, forKey: .pinchEnabled)) ?? d.pinchEnabled
+        pinchSensitivity = (try? c.decode(Double.self, forKey: .pinchSensitivity)) ?? d.pinchSensitivity
+        pinchActivationPixels = (try? c.decode(Double.self, forKey: .pinchActivationPixels)) ?? d.pinchActivationPixels
     }
 
     /// Whether this device should drive the cursor.

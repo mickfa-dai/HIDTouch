@@ -49,7 +49,15 @@ public class CGEventInjector {
     /// Post a scroll event. macOS has no public multi-touch injection, so a
     /// two-finger pan is delivered as a pixel-precise scroll wheel event, which
     /// every app handles correctly.
-    public func postScroll(deltaX: Double, deltaY: Double) {
+    ///
+    /// - Parameter point: where the fingers are, in global CoreGraphics
+    ///   coordinates. **Passing this matters.** A scroll wheel event carries no
+    ///   position of its own: the window server delivers it to whatever is under
+    ///   the cursor. A two-finger pan does not move the cursor, so on a machine
+    ///   with more than one display the scroll lands wherever the pointer
+    ///   happens to be — commonly a different screen entirely, which is not
+    ///   where the user is touching.
+    public func postScroll(deltaX: Double, deltaY: Double, at point: CGPoint? = nil) {
         guard deltaX.isFinite, deltaY.isFinite else { return }
         guard abs(deltaX) >= 0.5 || abs(deltaY) >= 0.5 else { return }
 
@@ -61,7 +69,97 @@ public class CGEventInjector {
                                   wheel3: 0) else {
             return
         }
+        place(event, at: point)
         event.post(tap: .cghidEventTap)
+    }
+
+    /// Aim a positionless event at the fingers.
+    ///
+    /// Both the warp and the explicit location are needed. Routing follows the
+    /// event's location, but an application that consults `NSEvent.mouseLocation`
+    /// — or simply draws a hover state — reads the real cursor, so leaving the
+    /// pointer on another screen looks wrong even when the scroll goes to the
+    /// right window.
+    private func place(_ event: CGEvent, at point: CGPoint?) {
+        guard let point = point, point.x.isFinite, point.y.isFinite else { return }
+        CGWarpMouseCursorPosition(point)
+        event.location = point
+        lastPoint = point
+    }
+
+    // MARK: - Pinch
+
+    /// The undocumented encoding of a gesture event.
+    ///
+    /// macOS delivers a pinch to applications as an `NSEvent` of type `.magnify`,
+    /// and nothing in the public API produces one: `CGEvent` offers mouse,
+    /// keyboard and scroll wheel events and stops there. The event type and the
+    /// three fields below are the encoding the window server actually reads, and
+    /// none of them appear in any SDK header. Apple guarantees nothing about
+    /// them across releases — **if pinch stops working after a macOS update,
+    /// this is the first place to look**, and the failure will be silent because
+    /// an unrecognised gesture event is simply dropped.
+    ///
+    /// The phase values are public (`CGGesturePhase`), and the HID type matches
+    /// `kIOHIDEventTypeZoom` from IOKit's HID event tables.
+    private enum Gesture {
+        /// `NSEventTypeGesture`.
+        static let eventType = CGEventType(rawValue: 29)!
+        /// Which kind of gesture the event carries.
+        static let hidTypeField = CGEventField(rawValue: 110)!
+        /// Fractional change in scale carried by this event.
+        static let zoomValueField = CGEventField(rawValue: 113)!
+        /// A `CGGesturePhase`.
+        static let phaseField = CGEventField(rawValue: 132)!
+        /// `kIOHIDEventTypeZoom`.
+        static let zoomHIDType: Int64 = 8
+    }
+
+    private var isMagnifying = false
+
+    /// True while a pinch has been opened and not yet closed.
+    public var hasActiveMagnification: Bool { isMagnifying }
+
+    /// Post one step of a pinch. `delta` is a *fractional* change in scale for
+    /// this frame, the same quantity `NSEvent.magnification` carries: positive
+    /// zooms in, and an app accumulates the steps itself.
+    ///
+    /// The opening `began` is emitted automatically on the first call, so
+    /// callers only have to remember to `endMagnify()`.
+    /// - Parameter point: where the fingers are. A gesture event is routed by
+    ///   cursor position just like a scroll wheel event, so without this a pinch
+    ///   zooms whichever screen the pointer was left on.
+    public func postMagnify(delta: Double, at point: CGPoint? = nil) {
+        guard delta.isFinite else { return }
+        let phase: CGGesturePhase = isMagnifying ? .changed : .began
+        isMagnifying = true
+        postGesture(magnification: delta, phase: phase, at: point)
+    }
+
+    /// Close an in-flight pinch. Safe to call when there is none.
+    ///
+    /// Skipping this leaves the receiving app inside its gesture handler: the
+    /// zoom keeps tracking after the fingers are gone, and the next pinch is
+    /// appended to the abandoned one instead of starting fresh.
+    public func endMagnify() {
+        guard isMagnifying else { return }
+        isMagnifying = false
+        postGesture(magnification: 0, phase: .ended)
+    }
+
+    private func postGesture(magnification: Double, phase: CGGesturePhase, at point: CGPoint? = nil) {
+        guard let event = CGEvent(source: source) else { return }
+        event.type = Gesture.eventType
+        event.setIntegerValueField(Gesture.hidTypeField, value: Gesture.zoomHIDType)
+        event.setIntegerValueField(Gesture.phaseField, value: Int64(phase.rawValue))
+        event.setDoubleValueField(Gesture.zoomValueField, value: magnification)
+        // `endMagnify` passes no point, and needs none: every preceding frame
+        // warped the cursor onto the fingers, so the closing event already
+        // resolves to the window the gesture was running in.
+        place(event, at: point)
+        event.post(tap: .cghidEventTap)
+
+        Log.event(String(format: "[EVT] posted MAGNIFY %+.4f phase=%d", magnification, phase.rawValue))
     }
 
     /// Release a held button — call when the driver stops or every finger lifts.
@@ -81,6 +179,7 @@ public class CGEventInjector {
     public func releaseImmediately() {
         pendingRelease?.invalidate()
         pendingRelease = nil
+        endMagnify()
         guard isMouseDown else { return }
         post(.leftMouseUp, at: lastPoint)
         isMouseDown = false

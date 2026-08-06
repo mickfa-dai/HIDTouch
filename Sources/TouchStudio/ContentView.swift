@@ -391,6 +391,7 @@ struct MultiTouchCard: View {
         switch appModel.lastGesture {
         case .pointer: return "pointer"
         case .scroll(let dx, let dy): return String(format: "scroll (%.0f, %.0f)", dx, dy)
+        case .magnify(let delta): return String(format: "pinch %+.3f", delta)
         case .none: return appModel.contacts.isEmpty ? "idle" : "tracking"
         }
     }
@@ -723,7 +724,7 @@ struct SettingsView: View {
 
                     Divider().padding(.vertical, 4)
 
-                    Text("macOS has no public API for injecting real multi-touch, so two-finger panning is delivered as a scroll wheel event instead. Pinch and rotate are tracked but cannot be forwarded.")
+                    Text("macOS has no public API for injecting real multi-touch. Two-finger panning is delivered as a scroll wheel event, which is public API and behaves correctly everywhere. Pinch uses undocumented CGEvent fields — see below. Rotation is tracked but not forwarded.")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
@@ -754,6 +755,35 @@ struct SettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
 
                     Toggle("Natural scrolling (content follows fingers)", isOn: appModel.binding(\.naturalScrolling))
+
+                    Divider().padding(.vertical, 4)
+
+                    Toggle("Pinch to zoom", isOn: appModel.binding(\.pinchEnabled))
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle").font(.caption).foregroundStyle(.secondary)
+                        Text("Off by default. There is no public API for synthesising a pinch, so this posts a CGEvent whose type and fields are undocumented. It works today, but Apple guarantees nothing across macOS releases and a change would break it silently. Everything else in this app uses public API only.")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    HStack {
+                        Text("Pinch speed").frame(width: 150, alignment: .leading)
+                        Slider(value: appModel.binding(\.pinchSensitivity), in: 0.1...4.0)
+                        Text(String(format: "%.2f", appModel.config.pinchSensitivity))
+                            .font(.system(.body, design: .monospaced)).frame(width: 50)
+                    }
+                    .disabled(!appModel.config.pinchEnabled)
+
+                    HStack {
+                        Text("Pinch threshold (px)").frame(width: 150, alignment: .leading)
+                        Slider(value: appModel.binding(\.pinchActivationPixels), in: 2...60)
+                        Text(String(format: "%.0f", appModel.config.pinchActivationPixels))
+                            .font(.system(.body, design: .monospaced)).frame(width: 50)
+                    }
+                    .disabled(!appModel.config.pinchEnabled)
+                    Text("How much the gap between two fingers must change before the gesture counts as a pinch instead of a pan. Raise it if scrolling turns into zooming; lower it if pinching is hard to start.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 SectionBox(title: "Device Handling") {

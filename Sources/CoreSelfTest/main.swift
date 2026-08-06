@@ -479,6 +479,95 @@ Check.suite("Gesture recognition") {
         Check.expect(false, "a second finger landing does not fling the view")
     }
 
+    // MARK: Pinch
+
+    // Fingers moving apart past the threshold zoom in; the delta is a fraction
+    // of the current separation, not a distance.
+    var pinch = GestureRecognizer(scrollActivationPixels: 6, pinchEnabled: true,
+                                  pinchSensitivity: 1.0, pinchActivationPixels: 12)
+    _ = pinch.handle(contacts: [contact(0, 0, 0), contact(1, 100, 0)])
+    if case .magnify(let delta) = pinch.handle(contacts: [contact(0, -10, 0), contact(1, 110, 0)]) {
+        Check.expect(delta > 0, "spreading the fingers zooms in")
+        Check.close(delta, 20.0 / 100.0, 0.001, "pinch delta is the fractional change in separation")
+    } else {
+        Check.expect(false, "spreading the fingers past the threshold pinches")
+    }
+
+    // Bringing them together zooms out.
+    var pinchIn = GestureRecognizer(pinchEnabled: true, pinchActivationPixels: 12)
+    _ = pinchIn.handle(contacts: [contact(0, 0, 0), contact(1, 200, 0)])
+    if case .magnify(let delta) = pinchIn.handle(contacts: [contact(0, 20, 0), contact(1, 180, 0)]) {
+        Check.expect(delta < 0, "closing the fingers zooms out")
+    } else {
+        Check.expect(false, "closing the fingers pinches")
+    }
+
+    // The same separation change scales the same amount regardless of how far
+    // apart the fingers started — that is the point of using a ratio.
+    var near = GestureRecognizer(pinchEnabled: true, pinchActivationPixels: 5)
+    var far = GestureRecognizer(pinchEnabled: true, pinchActivationPixels: 5)
+    _ = near.handle(contacts: [contact(0, 0, 0), contact(1, 100, 0)])
+    _ = far.handle(contacts: [contact(0, 0, 0), contact(1, 400, 0)])
+    if case .magnify(let a) = near.handle(contacts: [contact(0, 0, 0), contact(1, 110, 0)]),
+       case .magnify(let b) = far.handle(contacts: [contact(0, 0, 0), contact(1, 440, 0)]) {
+        Check.close(a, b, 0.001, "a 10% spread means the same zoom at any finger distance")
+    } else {
+        Check.expect(false, "both distances produce a pinch")
+    }
+
+    // A pan holds its separation, so it must stay a scroll however far it goes.
+    var pan = GestureRecognizer(scrollActivationPixels: 6, pinchEnabled: true, pinchActivationPixels: 12)
+    _ = pan.handle(contacts: [contact(0, 0, 0), contact(1, 100, 0)])
+    var stayedScroll = true
+    for step in stride(from: 20.0, through: 400.0, by: 20.0) {
+        if case .magnify = pan.handle(contacts: [contact(0, step, step), contact(1, 100 + step, step)]) {
+            stayedScroll = false
+        }
+    }
+    Check.expect(stayedScroll, "a long pan never turns into a pinch")
+
+    // Once decided, the mode is locked: a pinch that drags its centroid must
+    // not start scrolling halfway through.
+    var locked = GestureRecognizer(scrollActivationPixels: 6, pinchEnabled: true, pinchActivationPixels: 12)
+    _ = locked.handle(contacts: [contact(0, 0, 0), contact(1, 100, 0)])
+    _ = locked.handle(contacts: [contact(0, -20, 0), contact(1, 120, 0)])
+    var stayedPinch = true
+    for step in stride(from: 10.0, through: 200.0, by: 10.0) {
+        if case .scroll = locked.handle(contacts: [contact(0, -20 + step, step), contact(1, 120 + step, step)]) {
+            stayedPinch = false
+        }
+    }
+    Check.expect(stayedPinch, "a pinch that drifts does not become a scroll")
+
+    // With pinch off, spreading the fingers must produce nothing at all — a
+    // symmetric spread leaves the centroid where it was, so there is no pan to
+    // report either.
+    var noPinch = GestureRecognizer(scrollActivationPixels: 6, pinchEnabled: false, pinchActivationPixels: 12)
+    _ = noPinch.handle(contacts: [contact(0, 0, 0), contact(1, 100, 0)])
+    if case .none = noPinch.handle(contacts: [contact(0, -50, 0), contact(1, 150, 0)]) {
+        Check.expect(true, "with pinch off, spreading the fingers does nothing")
+    } else {
+        Check.expect(false, "with pinch off, spreading the fingers does nothing")
+    }
+
+    // Panning is unaffected by the pinch switch.
+    var noPinchPan = GestureRecognizer(scrollActivationPixels: 6, pinchEnabled: false)
+    _ = noPinchPan.handle(contacts: [contact(0, 0, 0), contact(1, 100, 0)])
+    if case .scroll = noPinchPan.handle(contacts: [contact(0, 0, 40), contact(1, 100, 40)]) {
+        Check.expect(true, "with pinch off, a two-finger pan still scrolls")
+    } else {
+        Check.expect(false, "with pinch off, a two-finger pan still scrolls")
+    }
+
+    // Sensitivity scales the fraction handed to the application.
+    var strong = GestureRecognizer(pinchEnabled: true, pinchSensitivity: 3.0, pinchActivationPixels: 5)
+    _ = strong.handle(contacts: [contact(0, 0, 0), contact(1, 100, 0)])
+    if case .magnify(let delta) = strong.handle(contacts: [contact(0, -5, 0), contact(1, 105, 0)]) {
+        Check.close(delta, 10.0 / 100.0 * 3.0, 0.001, "pinch sensitivity scales the delta")
+    } else {
+        Check.expect(false, "pinch sensitivity scales the delta")
+    }
+
     // Three or more fingers are tracked but not mapped to anything.
     var many = GestureRecognizer()
     _ = many.handle(contacts: [contact(0, 0, 0), contact(1, 10, 0), contact(2, 20, 0)])

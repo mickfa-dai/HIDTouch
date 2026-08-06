@@ -217,6 +217,13 @@ public final class TouchPipeline {
         // A contact of any kind means the finger never really left.
         if !frame.isEmpty { cancelPendingLift() }
 
+        // Close any pinch the moment the frame stops being one. A gesture left
+        // open keeps the receiving app inside its handler, so this has to happen
+        // on every other outcome — including the frames where nothing is
+        // injected at all.
+        if case .magnify = action {} else {
+            cgInjector.endMagnify()
+        }
 
         switch action {
         case .pointer(let contact):
@@ -234,7 +241,17 @@ public final class TouchPipeline {
 
         case .scroll(let dx, let dy):
             if isInjectionEnabled && mode != .debugOnly {
-                cgInjector.postScroll(deltaX: dx, deltaY: dy)
+                // A second finger landing mid-drag turns a press into a scroll
+                // while the button is still down, which scrolls and drags at
+                // once. Let go first.
+                cgInjector.reset()
+                cgInjector.postScroll(deltaX: dx, deltaY: dy, at: fingerPoint(mapped, in: bounds))
+            }
+
+        case .magnify(let delta):
+            if isInjectionEnabled && mode != .debugOnly {
+                cgInjector.reset()
+                cgInjector.postMagnify(delta: delta, at: fingerPoint(mapped, in: bounds))
             }
 
         case .none:
@@ -273,6 +290,20 @@ public final class TouchPipeline {
         virtualDevice.sendTouchEvent(isDown: isDown, normalizedX: normX, normalizedY: normY)
     }
 
+    /// Midpoint of the fingers, clamped onto the target display.
+    ///
+    /// Scroll and gesture events carry no position of their own and are
+    /// delivered to whatever sits under the cursor, so a multi-display setup
+    /// needs to be told explicitly where the touch is happening — otherwise the
+    /// gesture lands on whichever screen the pointer was left on.
+    private func fingerPoint(_ contacts: [MappedContact], in bounds: CGRect) -> CGPoint? {
+        guard !contacts.isEmpty else { return nil }
+        let sx = contacts.reduce(0.0) { $0 + $1.screen.x }
+        let sy = contacts.reduce(0.0) { $0 + $1.screen.y }
+        let mid = CGPoint(x: sx / Double(contacts.count), y: sy / Double(contacts.count))
+        return clamp(mid, to: bounds)
+    }
+
     private func clamp(_ point: CGPoint, to bounds: CGRect) -> CGPoint {
         guard !bounds.isEmpty else { return point }
         return CGPoint(x: max(bounds.minX, min(bounds.maxX - 1, point.x)),
@@ -289,6 +320,9 @@ public final class TouchPipeline {
     private func applyGestureConfig() {
         gestures.configure(scrollSensitivity: config.scrollSensitivity,
                            scrollActivationPixels: config.scrollActivationPixels,
-                           naturalScrolling: config.naturalScrolling)
+                           naturalScrolling: config.naturalScrolling,
+                           pinchEnabled: config.pinchEnabled,
+                           pinchSensitivity: config.pinchSensitivity,
+                           pinchActivationPixels: config.pinchActivationPixels)
     }
 }

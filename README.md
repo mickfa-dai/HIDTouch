@@ -39,8 +39,9 @@ has been verified on.
 | Multi-touch parsing (up to 10 contacts) | ✅ |
 | One finger → cursor move + click | ✅ |
 | Two fingers → scroll | ✅ |
+| Two fingers → pinch to zoom | ⚠️ works, but built on undocumented API — off by default |
 | Three or more fingers | tracked and visualised only |
-| Pinch / rotate as native gestures | ❌ not implemented (see [Output-side limits](#output-side-limits)) |
+| Rotation as a native gesture | ❌ not implemented |
 | `IOHIDUserDevice` virtual digitizer | ❌ blocked on an Apple-issued entitlement |
 
 ---
@@ -315,6 +316,24 @@ Panels also emit a single empty frame mid-touch fairly often, so a lift is only
 honoured after `liftDebounce` (30 ms by default). Without that, clicks break
 apart and drags get chopped in two.
 
+### Scroll and gesture events have no position
+
+A mouse event carries its location. A scroll wheel event does not, and neither
+does a gesture event: the window server delivers both to whatever sits under the
+**cursor**. Since a two-finger pan does not move the cursor, on a multi-display
+machine the scroll lands on whichever screen the pointer was last left on —
+which is very often not the screen being touched.
+
+So the finger midpoint is passed explicitly, and both the cursor and the event's
+location are set. Routing follows the event location, but an app that reads
+`NSEvent.mouseLocation` or draws a hover state reads the real cursor, so leaving
+the pointer on another screen looks wrong even when the scroll goes to the right
+window.
+
+The visible consequence is that scrolling or pinching pulls the cursor onto the
+panel. That is the correct behaviour for a touchscreen, but it is a behaviour,
+not an accident.
+
 ### Waking up a Win8 digitizer
 
 A Win8-compliant panel stays in single-contact mouse-emulation mode until the
@@ -365,9 +384,51 @@ and which must be embedded in a provisioning profile. Ad-hoc and self-signed
 builds cannot obtain it. Selecting Virtual Multi-Touch when the device cannot be
 created falls back to mouse emulation and shows a warning on the Dashboard.
 
-Native pinch and rotate gestures are technically reachable through undocumented
-`CGEvent` gesture fields, but those carry no compatibility guarantee across
-macOS releases and are deliberately not used here.
+### Pinch, and the one undocumented thing in here
+
+Everything else in this driver is public API. Pinch is not, and it is the only
+part that is not, which is why it ships **off by default** behind a switch in
+Settings.
+
+macOS delivers a pinch to an application as an `NSEvent` of type `.magnify`.
+Nothing in the public API produces one — `CGEvent` covers mouse, keyboard and
+scroll wheel events and stops there. The encoding the window server actually
+reads is:
+
+```swift
+let event = CGEvent(source: source)
+event.type = CGEventType(rawValue: 29)!                    // NSEventTypeGesture
+event.setIntegerValueField(CGEventField(rawValue: 110)!, value: 8)   // kIOHIDEventTypeZoom
+event.setIntegerValueField(CGEventField(rawValue: 132)!, value: phase)
+event.setDoubleValueField(CGEventField(rawValue: 113)!, value: magnification)
+event.post(tap: .cghidEventTap)
+```
+
+The event type and those three field numbers appear in no SDK header. The phase
+values *are* public (`CGGesturePhase` in `CGEventTypes.h`) and the HID type
+matches `kIOHIDEventTypeZoom`. Apple guarantees nothing about the rest across
+releases, and the failure mode is silent — an unrecognised gesture event is
+simply dropped, so a future macOS could break pinch with no error anywhere.
+`CGEventInjector.Gesture` is the one place to look if that happens.
+
+A gesture must be closed. Posting `began` and never `ended` leaves the receiving
+app inside its gesture handler: zoom keeps tracking after the fingers are gone,
+and the next pinch is appended to the abandoned one. The injector owns the phase
+state so callers cannot forget — anything that is not a magnify closes an open
+one.
+
+Rotation is recognised in the same way in principle, but is not implemented.
+
+#### Telling a pinch from a pan
+
+Two fingers can mean either, and both are happening at once: a pinch always
+drags its centroid a little, a pan always wobbles the separation. The recogniser
+measures **net change from where the gesture started** — not per-frame movement
+accumulated — because accumulating absolute change sums sensor noise
+monotonically, so a long slow pan eventually crosses any pinch threshold on
+jitter alone. Whichever threshold is crossed first wins, and the decision is
+then **locked until the fingers lift**, so a drifting pinch cannot flicker into
+a scroll halfway through.
 
 ### Tracing events
 
