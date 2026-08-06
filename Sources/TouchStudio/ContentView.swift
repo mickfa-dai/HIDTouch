@@ -382,6 +382,47 @@ private struct PermissionRow: View {
     }
 }
 
+/// Start-at-login switch.
+///
+/// The state lives in `SMAppService`, not in the config file, so it is read back
+/// from the system rather than stored: a user who turns the entry off under
+/// System Settings › General › Login Items must not find this still claiming to
+/// be on.
+struct LoginItemToggle: View {
+    @State private var isOn = LoginItem.isEnabled
+    @State private var failure: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Open at login", isOn: Binding(
+                get: { isOn },
+                set: { newValue in
+                    do {
+                        try LoginItem.set(newValue)
+                        failure = nil
+                    } catch {
+                        failure = error.localizedDescription
+                    }
+                    // Re-read rather than trust the write: registration can be
+                    // refused, and the switch must show what is actually set.
+                    isOn = LoginItem.isEnabled
+                }
+            ))
+
+            Text("HIDTouch runs in the menu bar with no Dock icon. Closing this window leaves the driver running; quit it from the menu bar item.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let failure = failure {
+                Text(failure)
+                    .font(.caption).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .onAppear { isOn = LoginItem.isEnabled }
+    }
+}
+
 /// Multi-touch status: whether the panel was switched out of mouse emulation,
 /// what its report descriptor says it can do, and what is on it right now.
 struct MultiTouchCard: View {
@@ -625,6 +666,10 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                SectionBox(title: "General") {
+                    LoginItemToggle()
+                }
+
                 SectionBox(title: "HID Report Layout") {
                     Text("Offsets index into the packet exactly as shown in HID Inspect. Changes apply immediately.")
                         .font(.caption)

@@ -4,15 +4,57 @@ import HIDDriverCore
 
 @main
 struct TouchStudioApp: App {
-    @StateObject private var appModel = AppViewModel()
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
 
     var body: some Scene {
-        WindowGroup("HIDTouch Studio") {
-            ContentView()
-                .environmentObject(appModel)
-                .frame(minWidth: 900, minHeight: 640)
+        // Deliberately no window scene. The app is a menu bar agent
+        // (`LSUIElement`), and the driver runs without any window at all — the
+        // configuration window is opened on demand by `MenuBarController`.
+        // Declaring a `WindowGroup` here would put one on screen at every
+        // launch, including the login-time one.
+        Settings { EmptyView() }
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var appModel: AppViewModel?
+    private var menuBar: MenuBarController?
+    private var refreshTimer: Timer?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let model = AppViewModel()
+        let menuBar = MenuBarController(appModel: model)
+        menuBar.install()
+        self.appModel = model
+        self.menuBar = menuBar
+
+        // Nothing has been set up yet, so an invisible agent would look like an
+        // app that failed to start. Show the window once; after that the menu
+        // bar is enough.
+        if model.config.calibrationPoints.isEmpty || model.inputMonitoring != .granted {
+            menuBar.openStudio()
         }
-        .windowStyle(.titleBar)
+
+        // The status item summarises live state — permissions, whether a panel
+        // is attached — none of which is KVO-observable on a SwiftUI model, so
+        // it is sampled. A menu that is a second out of date is fine; wiring
+        // Combine into AppKit for this would not earn its complexity.
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak menuBar] _ in
+            menuBar?.refreshIcon()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        refreshTimer = timer
+    }
+
+    /// Closing the window must not quit: the driver is the point, and it keeps
+    /// running with no window open.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        refreshTimer?.invalidate()
+        appModel?.shutdown()
     }
 }
 
@@ -190,6 +232,16 @@ final class AppViewModel: ObservableObject, HIDDeviceMonitorDelegate {
         if !hasAccessibility {
             Permissions.openAccessibilitySettings()
         }
+    }
+
+    /// Give the devices back and let go of any held button or open gesture.
+    ///
+    /// Quitting mid-touch would otherwise leave the mouse button down or a pinch
+    /// unclosed, and the app that was receiving them has no way to recover on
+    /// its own.
+    func shutdown() {
+        pipeline.reset()
+        monitor.stopMonitoring()
     }
 
     /// Re-open the HID manager after the user grants the permission, so the app

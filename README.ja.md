@@ -88,8 +88,20 @@ Mouse (`0x01`/`0x02`)・Digitizer (`0x0D`/`0x02`)・ベンダー定義 (`0xFF00`
 ### 2. HIDTouch Studio でのセットアップ
 
 ```bash
-open "dist/HIDTouch Studio.app"     # または swift run hidtouch-studio
+open "dist/HIDTouch Studio.app"
 ```
+
+HIDTouch は**メニューバー常駐**です。Dock アイコンは無く、明示的に開かない限り
+ウィンドウも出ません。ウィンドウを閉じてもドライバーは動き続けます。メニューバーの
+項目をクリックすると、状態の1行表示、ウィンドウの再表示、**ログイン時に開く**の
+切り替え、終了ができます。
+
+初回起動時だけはウィンドウが自動で開きます。未較正の状態で何も表示せずに常駐すると、
+起動に失敗したアプリと区別が付かないためです。
+
+> `swift run hidtouch-studio` は同じコードを署名済みバンドルの外で動かすため、
+> バンドルに付与された入力監視の許可も `LSUIElement` も効きません。
+> コンパイル確認以外の用途では、バンドルを使ってください。
 
 1. **Dashboard** — *Driver Input Device* で対象パネルを指定します。自動判定でも
    動きますが、VID/PID を明示的に固定するほうが確実です。

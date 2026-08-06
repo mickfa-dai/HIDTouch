@@ -91,8 +91,21 @@ and a vendor-defined one (`0xFF00`) — and telling them apart is the whole game
 ### 2. Set it up in HIDTouch Studio
 
 ```bash
-open "dist/HIDTouch Studio.app"     # or: swift run hidtouch-studio
+open "dist/HIDTouch Studio.app"
 ```
+
+HIDTouch runs as a **menu bar agent** — no Dock icon, and no window unless you
+ask for one. The driver works with everything closed. Click the menu bar item
+for a one-line status, to open this window again, to enable **Open at login**,
+or to quit.
+
+The first launch opens the window on its own, since an app that has not been
+calibrated yet and shows nothing is indistinguishable from one that failed to
+start.
+
+> `swift run hidtouch-studio` runs the same code but outside the signed bundle,
+> so it has neither the bundle's Input Monitoring grant nor `LSUIElement`. It is
+> useful for a quick compile check and not much else — use the bundle.
 
 1. **Dashboard** — pick your panel under *Driver Input Device*. Auto-detection
    works, but pinning the VID/PID explicitly is more reliable.

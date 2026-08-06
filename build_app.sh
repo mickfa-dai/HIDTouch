@@ -69,6 +69,11 @@ cat << 'EOF' > "${BUNDLE}/Contents/Info.plist"
     <string>13.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <!-- Menu bar agent: no Dock icon, and no window at launch. The driver runs
+         with no window open, so a Dock tile is only in the way — and an app
+         registered to start at login must not deal out a window every time. -->
+    <key>LSUIElement</key>
+    <true/>
     <key>NSInputMonitoringUsageDescription</key>
     <string>HIDTouch Studio requires Input Monitoring permissions to capture raw USB HID touch screen packets.</string>
     <key>NSAccessibilityUsageDescription</key>
