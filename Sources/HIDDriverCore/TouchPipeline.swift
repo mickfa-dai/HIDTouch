@@ -62,6 +62,10 @@ public final class TouchPipeline {
     /// every single report.
     private var virtualDeviceUnavailable = false
     private var lastScreenPoint: CGPoint = .zero
+    /// True after a touch has revealed the menu bar or Dock at a screen edge.
+    /// The next normal touch can then move the pointer away from the edge
+    /// before beginning a click or drag.
+    private var edgeHoverActive = false
     private var pendingLift: Timer?
 
     /// How long every contact must stay absent before the press is released.
@@ -233,7 +237,28 @@ public final class TouchPipeline {
                 switch mode {
                 case .virtualHID: sendVirtual(isDown: true, point: point, bounds: bounds)
                 case .mouseEmulation:
-                    cgInjector.postTouchEvent(screenPoint: point, isDown: true, clampTo: bounds)
+                    let edgeHoverPixels: CGFloat = 8.0
+                    let isEdgeHover =
+                        point.y <= bounds.minY + edgeHoverPixels ||
+                        point.y >= bounds.maxY - edgeHoverPixels
+
+                    if isEdgeHover {
+                        // Release any active drag, then move without pressing.
+                        // This lets macOS reveal an auto-hidden menu bar or Dock.
+                        cgInjector.reset(at: point)
+                        cgInjector.postMouseMove(screenPoint: point, clampTo: bounds)
+                        edgeHoverActive = true
+                    } else {
+                        // After revealing a screen edge, first move the pointer
+                        // back into the normal screen area without pressing.
+                        // macOS can then auto-hide the menu bar or Dock again.
+                        if edgeHoverActive {
+                            cgInjector.postMouseMove(screenPoint: point, clampTo: bounds)
+                            edgeHoverActive = false
+                        }
+
+                        cgInjector.postTouchEvent(screenPoint: point, isDown: true, clampTo: bounds)
+                    }
                     point = clamp(point, to: bounds)
                 case .debugOnly: break
                 }

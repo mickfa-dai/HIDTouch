@@ -423,6 +423,38 @@ final class AppViewModel: ObservableObject, HIDDeviceMonitorDelegate {
 
     private func handleCalibrationReport(data: Data, reportID: UInt32, from device: HIDDeviceInfo) {
         guard config.matches(device: device) else { return }
+
+        // A multi-touch panel must be calibrated from the same
+        // descriptor-derived reports used during normal operation.
+        if config.multiTouchEnabled, let layout = pipeline.multiTouchLayout {
+            // Ignore unrelated HID reports instead of feeding them into
+            // the generic single-touch parser.
+            guard let frame = MultiTouchParser(layout: layout).parse(data, reportID: reportID) else {
+                return
+            }
+
+            lastParseIssue = nil
+
+            if let contact = frame.contacts.first {
+                currentRawPoint = CGPoint(x: contact.rawX, y: contact.rawY)
+                lastTouchState = frame.contacts.count == 1
+                    ? "TOUCH DOWN"
+                    : "\(frame.contacts.count) FINGERS"
+
+                let now = Date()
+                if !isWaitingForTouchRelease && now.timeIntervalSince(lastRecordedTime) > 0.4 {
+                    lastRecordedTime = now
+                    isWaitingForTouchRelease = true
+                    recordCalibrationPoint(rawX: contact.rawX, rawY: contact.rawY)
+                }
+            } else {
+                lastTouchState = "TOUCH UP"
+                isWaitingForTouchRelease = false
+            }
+            return
+        }
+
+        // Original path for genuine single-touch panels.
         guard let raw = pipeline.parser.parse(reportData: data, reportID: reportID) else {
             lastParseIssue = pipeline.parser.lastRejection?.description
             return

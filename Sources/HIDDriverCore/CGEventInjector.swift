@@ -46,6 +46,24 @@ public class CGEventInjector {
 
     public init() {}
 
+    /// Move the mouse cursor without pressing a mouse button.
+    /// Used for screen-edge hover so macOS can reveal the menu bar or Dock.
+    public func postMouseMove(screenPoint: CGPoint, clampTo bounds: CGRect? = nil) {
+        guard screenPoint.x.isFinite, screenPoint.y.isFinite else { return }
+
+        var point = screenPoint
+        if let bounds = bounds, !bounds.isEmpty {
+            point.x = max(bounds.minX, min(bounds.maxX - 1, point.x))
+            point.y = max(bounds.minY, min(bounds.maxY - 1, point.y))
+        }
+
+        // Never turn an existing drag into a hover implicitly.
+        guard !isMouseDown else { return }
+
+        post(.mouseMoved, at: point)
+        lastPoint = point
+    }
+
     /// Post a scroll event. macOS has no public multi-touch injection, so a
     /// two-finger pan is delivered as a pixel-precise scroll wheel event, which
     /// every app handles correctly.
